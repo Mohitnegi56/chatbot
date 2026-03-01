@@ -1,0 +1,5 @@
+.env
+chatbot_history.db
+__pycache__/
+myenv/
+venv/
