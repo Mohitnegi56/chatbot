@@ -1,0 +1,15 @@
+streamlit==1.32.0
+
+langgraph==1.0.10
+langgraph-checkpoint==4.0.0
+langgraph-checkpoint-sqlite==3.0.3
+langgraph-prebuilt==1.0.8
+
+langchain==0.2.14
+langchain-core==0.2.36
+langchain-huggingface==0.0.3
+
+huggingface_hub==0.23.4
+transformers==4.41.2
+
+python-dotenv==1.0.1
