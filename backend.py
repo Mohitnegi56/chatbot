@@ -4,6 +4,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.sqlite import SqliteSaver
+import time
+from groq import RateLimitError
 
 from langchain_groq import ChatGroq
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -18,8 +20,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 load_dotenv()
 
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0
+    model="llama-3.1-8b-instant",
+    temperature=0,
+    max_tokens=512
 )
 
 search_tool = DuckDuckGoSearchRun()
@@ -90,12 +93,15 @@ def chat_node(state: ChatState):
 
     messages = state["messages"]
 
-    if len(messages) == 1:
-        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+    for attempt in range(3):
+        try:
+            response = llm_with_tools.invoke(messages)
+            return {"messages": [response]}
 
-    response = llm_with_tools.invoke(messages)
+        except RateLimitError:
+            time.sleep(2)
 
-    return {"messages": [response]}
+    return {"messages": [{"role": "assistant", "content": "⚠️ Rate limit reached. Please try again in a few seconds."}]}
 
 tool_node = ToolNode(tools)
 
