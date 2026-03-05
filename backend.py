@@ -1,53 +1,125 @@
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START
 from typing import TypedDict, Annotated
-from dotenv import load_dotenv
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-from langchain_core.messages import BaseMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from langchain_groq import ChatGroq
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_core.tools import tool
+
+import requests
+from dotenv import load_dotenv
 import sqlite3
+import os
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 load_dotenv()
 
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-    task="conversational",
-    max_new_tokens=300,
-    temperature=0.7
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0
 )
 
-chat_llm = ChatHuggingFace(llm=hf_endpoint)
+search_tool = DuckDuckGoSearchRun()
+
+
+@tool
+def calculator(first_num: float, second_num: float, operation: str) -> str:
+    """
+    Perform arithmetic operations.
+    Operations supported: add, subtract, multiply, divide.
+    """
+
+    if operation == "add":
+        return str(first_num + second_num)
+
+    elif operation == "subtract":
+        return str(first_num - second_num)
+
+    elif operation == "multiply":
+        return str(first_num * second_num)
+
+    elif operation == "divide":
+        if second_num == 0:
+            return "Cannot divide by zero"
+        return str(first_num / second_num)
+
+    else:
+        return "Invalid operation"
+
+
+@tool
+def get_stock_price(symbol: str) -> str:
+    """
+    Get the latest stock price using Alpha Vantage API.
+    Example symbol: AAPL, TSLA, MSFT
+    """
+
+    api_key = st.secrets["ALPHAVANTAGE_API_KEY"]
+
+    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={api_key}"
+    r = requests.get(url)
+    data = r.json()
+
+    try:
+        price = data["Global Quote"]["05. price"]
+        return f"Current price of {symbol} is ${price}"
+    except:
+        return "Stock data not found"
+    
+tools = [calculator, get_stock_price, search_tool]
+llm_with_tools = llm.bind_tools(tools)
 
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
+SYSTEM_PROMPT = """
+You are an AI assistant.
+
+Use tools whenever information requires real-time data.
+
+Use:
+- search tool for news or current events
+- calculator for math
+- get_stock_price for stocks
+"""
+
 def chat_node(state: ChatState):
+
     messages = state["messages"]
-    response = chat_llm.invoke(messages)
+
+    if len(messages) == 1:
+        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+
+    response = llm_with_tools.invoke(messages)
+
     return {"messages": [response]}
 
-conn = sqlite3.connect(database='chatbot_history.db', check_same_thread=False)
+tool_node = ToolNode(tools)
 
-checkpoint = SqliteSaver(conn=conn)
+conn = sqlite3.connect("chat_history.db", check_same_thread=False)
+
+checkpointer = SqliteSaver(conn)   
 
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
+graph.add_node("tools", tool_node)
 
 graph.add_edge(START, "chat_node")
-graph.add_edge("chat_node", END)
+graph.add_conditional_edges(
+    "chat_node",
+    tools_condition
+)
+graph.add_edge("tools", "chat_node")
 
-chatbot = graph.compile(checkpointer=checkpoint)
+chatbot = graph.compile(checkpointer=checkpointer)
 
-def get_all_threads():
-    thread_ids = set()
+def retrieve_chat_history():
+    threads = set()
 
-    for thread in checkpoint.list(None):
-        config = thread.config
-        if "configurable" in config:
-            thread_ids.add(config["configurable"].get("thread_id"))
+    for checkpoint in checkpointer.list(None):
+        threads.add(checkpoint.config["configurable"]["thread_id"])
 
-    return list(thread_ids)
-
-def clear_database():
-    conn.execute("DELETE FROM checkpoints")
-    conn.commit()
+    return list(threads)
